@@ -1,0 +1,244 @@
+---
+title: "Practical Machine Learning Assignment"
+author: "Nino Pozar"
+date: '28th January 2019 '
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har.Weight.
+
+The goal of this analysis is to develop a machine learning model to predict the manner that participants did the exercise from new set of measurements, as accurately as possible. In this analysis we will describe the steps, models and the thinking that was done to successfully develop machine learning model and the models will be evalueated using cross-validation.
+
+### Setting all up
+
+In this first part, we need to download the training and testing data, and install the packages needed for the analysis. 
+
+
+```{r setting, message=FALSE, results="hide"}
+## Installing required packages
+required_packages <- c("dplyr", "ggplot2", "caret", "corrplot", "knitr")
+packages_to_install <- required_packages[!(required_packages %in% installed.packages()[,"Package"])]
+if(length(packages_to_install)) install.packages(packages_to_install)
+lapply(required_packages, require, character.only = TRUE)
+
+## Downloading the data
+if(!file.exists("./data")) {
+  dir.create("./data")
+  url.train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+  url.test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+  download.file(url.train, "./data/train.csv")
+  download.file(url.test, "./data/test.csv")
+}
+
+## Reading in the training and test data
+training <- read.table("./data/train.csv", sep=",", header=TRUE)
+testing <- read.table("./data/test.csv", sep=",", header=TRUE)
+```
+
+### Exploratory data analysis
+
+To be able to develop a good machine learning algorithm, we need to explore the data we have. We take a look at the structure od the data and check the dimensions. We also checked if there are any missing values within the data.
+
+``` {r eda, comment="", cache=TRUE}
+kable(head(training))
+str(training)
+dim(training)
+dim(testing)
+message("number of NAs: ", sum(sapply(training,function (x) {sum(is.na(x))})))
+message("number of NAs: ", sum(sapply(testing,function (x) {sum(is.na(x))})))
+```
+
+We have seen that in our training data, there are many missing values; NAs. By looking at the head of the data, we can see that NAs appear in specific pattern, i.e. NAs appear only in specific variables. Furthermore, we examined the response variable *classe* to se how manny observations belong to each class.
+
+``` {r eda2, cache=TRUE}
+kable(summary(training$classe))
+```
+
+### Cleaning the data
+
+As we have mentioned in EDA, there are manny missing values in the data. Because of that, we've decided to clean this data by removing the variables that include the aforementioned NA values. Furthermore, we decided to exclude all non-numeric variables from our data and also decided to exclude the first 4 variables that include only information about time and participant. 
+
+``` {r gnc, comment="", cache=TRUE}
+train <- training [,sapply(training, is.numeric)]
+train <- train [, complete.cases(t(train))]
+train$classe <- training$classe
+train <- train[,-(1:4)]
+test <- testing [,sapply(training, is.numeric)]
+test <- test [, complete.cases(t(test))]
+test$problem_id <- testing$problem_id
+test <- test[,-(1:4)]
+```
+
+After cleaning and preparing the data, we again checked the data; and as we can see, all the variables with NAs are now gone. After we concluded cleaning the data, we are left with 53 predictor variables. 
+
+``` {r gnc2, comment="", cache=TRUE}
+dim(train)
+dim(test)
+message("number of NAs: ", sum(sapply(train,function (x) {sum(is.na(x))})))
+message("number of NAs: ", sum(sapply(test,function (x) {sum(is.na(x))})))
+```
+
+### Partitioning the data
+
+Since we have a lot of observations in training set, we've decided for a bit unorthodox data partitioning. Also it is worth noting that the second reason for this unorthodox splitting is that our PC cannot handle such large computations. So the split was to take 20% of the data into **train** set used to build the model, and 80% of the data to **vali** set that is used as out-of-sample data for cross-validation of the model and picking the best model. The split on validation set is needed since test set data provided is unsupervised, i.e. response variable is not provided. So the accuracy on validation data represents the accuracy of the model on the data that model has never seen before and thus we can estimate the out-of-samle error, which is unbiased by model development and thus does not overfit the accuracy. 
+
+``` {r split, cache=TRUE}
+set.seed(1)
+inTrain <- createDataPartition(y=train$classe, p=0.2, list=FALSE)
+vali <- train [-inTrain,]
+train <- train [inTrain,]
+```
+
+Next, we dedided to inspect the variables of **train** set. We decided to take a look at big paired plot of the predictor variables. Furthermore, since every predictor varible in the dataset is numeric, we inspected boxplot of each predictor on response to see how each predictor influences the response. To do this analysis, the data was scaled. If it wasn't, we wouldn't be able to inpect it. We also see on the second plot (boxplot) that we none of the variables is constant and in turn there is no need of removal of any predictor for that reason and there are no apperent outliers in the data. 
+
+``` {r exPlots, fig.width=10, fig.height=7, cache=TRUE}
+featurePlot(x=train[,-53], y=train[,53], plot = "pairs")
+featurePlot(x=scale(train[,-53]), y=train[,53], plot = "box")
+```
+
+## Checking for colinearity
+
+The problem in data could be that the predictor variables are highly colinear, or in other words, there are high correlations between the pairs of variables. To inspect this problem, we've ploted correlation plot of the data. As we can see on diagonal there are correlations of variable with itself, which are always 1. On the plot we don't see any real patterns or something that could alarm us, although we cee that come pairs of predictors do have high (positive/negative) correlation. To eliminate this effect we conducted PCA. PCA allowed us to reduce the dimensionality of the data and eliminate some noise (irreducible error) from it. We decided for cutoff of 0.95, which means that we decided to keep all the score vecotrs that explain 95% of the variance in the training data. 
+
+Finally, since we conducted PCA, we ploted the first two score vectors against one another and grouped the response variable by color. We've done this analysis on  training set and we can clearly see that first two principal components cannot seperate the data, and that is the reason why we needed 25 principal components to explain at least 95% of the variance in the training data. We can see some pattern in the data, but more principal components is needed to explain the response (i.e. 25 components).
+
+``` {r pca, fig.width=10, fig.height=7, cache=TRUE}
+set.seed(1)
+corrplot(cor(train[, -53]), method="color", type="lower", 
+         order="hclust", tl.cex=0.70, tl.col="black", tl.srt = 45)
+pcaProc <- preProcess(train, method = "pca", thresh = 0.95)
+train_pca <- predict(pcaProc, newdata=train)
+vali_pca <- predict(pcaProc, newdata=vali)
+test_pca <- predict(pcaProc, newdata=test)
+ggplot(train_pca, aes(x=PC1, y=PC2, color=classe))+geom_point()
+```
+
+After we conducted PCA, we decided to do another data partitioning. Since we will be building models by combining predictors and we have large amount of observations already, we split the training data into two equally sized parts, **train_pca1** and **train_pca2**. This way we will develop single models on **train_pca1** dataset and use the devloped models to combine predictors using the **train_pca2** dataset. This way we won't use any information from the validation set to develop the final model and we can pick the final model based on the prediction purely from the validation set.
+
+``` {r split2, fig.width=10, fig.height=7, cache=TRUE}
+set.seed(1)
+inTrain <- createDataPartition(y=train_pca$classe, p=0.5, list=FALSE)
+train_pca1 <- train_pca [inTrain,]
+train_pca2 <- train_pca [-inTrain,]
+```
+
+### Building machine learning models
+
+#### Building simple models
+
+We decided to build 5 machine learning models using caret package in R. The used model were *linear discriminant analysis* (**lda**), *random forests* (**rf**), *k-nearest neighbours* (**knn**), *gradient boosting* (**gbm**) and *neural netowrks* (**nnet**). This way we covered all possible types of machine learning models: linear, tree-based, knn and neural networks. All models are trained in the following sequence of code.
+
+``` {r models1, results="hide", message=FALSE, comment="", cache=TRUE}
+set.seed(1)
+
+model1 <- train(classe~.,  data=train_pca1, method="lda")
+model2 <- train(classe~.,  data=train_pca1, method="rf")
+model3 <- train(classe~.,  data=train_pca1, method="knn")
+model4 <- train(classe~.,  data=train_pca1, method="gbm")
+model5 <- train(classe~.,  data=train_pca1, method="nnet")
+```
+
+#### Building combined model
+
+Furthermore, we used the predicted responses from the aforedeveloped models to combine them into improved prediction model. We used *random forests* to develop combined model. The model was developed using **train_pca2** training set, as mentioned before, to make sure that we don't use any information about the valiadtion set in model development. 
+
+``` {r models2, results="hide", message=FALSE, comment="", cache=TRUE}
+prediction_df <- function(m1,m2,m3,m4,m5, data) {
+  p1 <- predict(m1, data)
+  p2 <- predict(m2, data)
+  p3 <- predict(m3, data)
+  p4 <- predict(m4, data)
+  p5 <- predict(m5, data)
+  pred_df <- data.frame(p1=p1, p2=p2, p3=p3, p4=p4, p5=p5, classe=data$classe)
+  pred_df
+}
+
+pred_df <- prediction_df(model1,model2,model3, model4, model5, train_pca2)
+model_combined <- train(classe~., data=pred_df, method="rf")
+```
+
+### Analyizing the accuracy of the developed models, on in-sample and out-of-sample data via cross-validation
+
+To see how good is our prediction accuracy, we used validation dataset, stored in **vali_pca**. We also showed prediction accuracy on **train_pca1** dataset that was used in model development, and we can clearly see how this accuracy can be missleading and how much higher it is than the validation accuracy (which shows no signs of overfitting). This analysis shows that out of 6 tested models, random forest and combined models show similar and the best accuracy of all models. knn model also showed very satisfying results and gba is also similar. Single hidden layer neural network model and linear model (lda) showed much lower rates of accuracy. All in all this analysis shows us that the best model for predicting classe variable is random forest, which is favorable to the combined models based on speed vs. accuracy trade-off. But since we've already developed all models, combined predictors model can also be ok. 
+
+``` {r acc, cache=TRUE}
+accuracy_classe <- function(model,data) {
+  a <- confusionMatrix(predict(model,data), data$classe)$overall ["Accuracy"]
+  a
+}
+
+acc_train1 <- data.frame(
+  lda=accuracy_classe(model1,train_pca1),
+  rf=accuracy_classe(model2,train_pca1),
+  knn=accuracy_classe(model3,train_pca1),
+  gbm=accuracy_classe(model4,train_pca1),
+  nn=accuracy_classe(model5,train_pca1),
+  combo=accuracy_classe(model_combined,prediction_df(model1,model2,model3, model4, model5, train_pca1))
+)
+
+acc_train2 <- data.frame(
+  lda=accuracy_classe(model1,train_pca2),
+  rf=accuracy_classe(model2,train_pca2),
+  knn=accuracy_classe(model3,train_pca2),
+  gbm=accuracy_classe(model4,train_pca2),
+  nn=accuracy_classe(model5,train_pca2),
+  combo=accuracy_classe(model_combined,prediction_df(model1,model2,model3, model4, model5, train_pca2))
+)
+
+acc_vali <- data.frame(
+  lda=accuracy_classe(model1,vali_pca),
+  rf=accuracy_classe(model2,vali_pca),
+  knn=accuracy_classe(model3,vali_pca),
+  gbm=accuracy_classe(model4,vali_pca),
+  nn=accuracy_classe(model5,vali_pca),
+  combo=accuracy_classe(model_combined,prediction_df(model1,model2,model3, model4, model5, vali_pca))
+)
+
+kable(acc_train1)
+kable(acc_vali)
+```
+
+### Analysis of the best models
+
+In this part we computed the confusion matrix on two best models, as previously mentioned. Those are random forests and combined predictors. 
+
+#### Random forests
+
+``` {r best1, cache=TRUE, comment=""}
+confusionMatrix(predict(model2,vali_pca), vali_pca$classe)
+```
+
+#### Combined predictors with random forests
+
+``` {r best2, cache=TRUE, comment=""}
+confusionMatrix(predict(model_combined,prediction_df(model1,model2,model3, model4, model5, vali_pca)), vali_pca$classe)
+```
+
+### Predicting on test set
+
+Here is given a table of predictions on **test** dataset of every model given in this analysis. We can see how models differ, and we expect, based on our accuracy cross-validation testing, that random forests and combined predictors models give the most accurate prediction of true values for test set. As we can see random forests and combined predictors are predicting the same values for test set. Using the quiz provided, we saw that our model correctly predicts 95% of the test set.
+
+``` {r predictions, cache=TRUE}
+test_pca$classe=test_pca$problem_id
+predictions <- data.frame(
+  lda=predict(model1, test_pca),
+  rf=predict(model2, test_pca),
+  knn=predict(model3,test_pca),
+  gbm=predict(model4, test_pca),
+  nn=predict(model5,test_pca),
+  combo=predict(model_combined, prediction_df(model1,model2,model3, model4, model5, test_pca))
+)
+kable(predictions)
+```
+
+### Conclusions
+
+This was very challenging assignment that took few days to solve. By developing 6 machine learning models (lda, rf, knn, gbm, nn and combined predictors), we've seen how they clearly perform differently on the same dataset. Using cross-validation we've seen how out-of-sample error is much worse than in-sample error. In the end we've seen that random forests proved to be the best algorithm for this analysis. The most challenging part of machine learning analysis is cleaning and preparing the data. To achive 100% test set accuracy, we suggest to furthermore improve data preprocessing because it's not who has the best algorithm that wins, but who has the most data. Thank you very mcuh for reading this.
